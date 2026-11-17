@@ -850,7 +850,50 @@ function renderJobFilters(sources) {
   select.value = sources.some(s => String(s.id) === previous) ? previous : "";
 }
 
-function renderJobs(jobs) {
+function renderJobTransfer(job, current) {
+  const labels = {
+    queued: "尚未传输", uploading: "上传中 · 字节比例未知",
+    api_accepted: "API 接收 · 未自动云端核验",
+    duplicate: "内容相同 · 跳过", retrying: "等待下一次重试",
+    failed: "失败，未完成", interrupted: "结果未知 · 需先核对云端", paused: "已暂停"
+  };
+  const cell = element("td", "muted job-transfer-cell", labels[job.status] || "—");
+  if (job.status !== "uploading" || current?.job_id !== job.id) return cell;
+
+  const confirmation = "等待 Google Photos 确认";
+  const phases = {
+    starting: "准备上传", hashing: "正在校验文件", checking: "正在检查云端文件",
+    finalizing: confirmation, completed: confirmation
+  };
+  if (current.status !== "uploading") {
+    cell.textContent = phases[current.status] || cell.textContent;
+    return cell;
+  }
+
+  const {bytes_uploaded: uploaded, bytes_total: total, attempt} = current;
+  if (!Number.isSafeInteger(total) || total <= 0 ||
+      !Number.isSafeInteger(uploaded) || uploaded < 0 || uploaded > total) return cell;
+
+  const retry = Number.isInteger(attempt) && attempt > 1 ? "第 " + attempt + " 次尝试" : "";
+  if (uploaded === 0) {
+    cell.textContent = retry ? "等待传输数据 · " + retry : "等待传输数据";
+    return cell;
+  }
+
+  const percent = Math.floor(uploaded / total * 1000) / 10;
+  const label = humanSize(uploaded) + " / " + humanSize(total) + " · " + percent + "%";
+  const bar = element("progress", "job-transfer-bar");
+  bar.max = total;
+  bar.value = uploaded;
+  bar.setAttribute("aria-label", "本次文件传输进度");
+  bar.setAttribute("aria-valuetext", label);
+  cell.replaceChildren(element("span", "job-transfer-count", label), bar);
+  const detail = [uploaded === total ? confirmation : "", retry].filter(Boolean).join(" · ");
+  if (detail) cell.appendChild(element("span", "job-transfer-detail", detail));
+  return cell;
+}
+
+function renderJobs(jobs, current) {
   const body = $("jobs-body");
   clear(body);
   if (!jobs.length) {
@@ -889,13 +932,7 @@ function renderJobs(jobs) {
       verifiedCell.appendChild(element("span", "muted", "未核验"));
     }
     tr.appendChild(verifiedCell);
-    const progress = {
-      queued: "尚未传输", uploading: "上传中 · 字节比例未知",
-      api_accepted: "API 接收 · 未自动云端核验",
-      duplicate: "内容相同 · 跳过", retrying: "等待下一次重试",
-      failed: "失败，未完成", interrupted: "结果未知 · 需先核对云端", paused: "已暂停"
-    };
-    tr.appendChild(element("td", "muted", progress[job.status] || "—"));
+    tr.appendChild(renderJobTransfer(job, current));
     const actions = element("td");
     if (["failed", "retrying", "interrupted"].includes(job.status)) {
       const retry = element("button", "btn soft", "重新入队");
@@ -954,7 +991,7 @@ async function refresh() {
       params.set("limit", String(pageSize));
       params.set("offset", String(pageOffset));
       const tasks = await get("/api/jobs?" + params.toString());
-      renderJobs(tasks.jobs);
+      renderJobs(tasks.jobs, status.upload_progress?.current);
       renderPagination(tasks);
     }
     $("sync-switch").checked = !!status.auto_sync_enabled;
